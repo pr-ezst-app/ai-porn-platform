@@ -52,7 +52,7 @@ def handler(event: dict, context) -> dict:
     print(f"[generate-video] Sending to Replicate: {enhanced_prompt[:100]}")
 
     response = requests.post(
-        'https://api.replicate.com/v1/models/wan-ai/wan2.1-t2v-480p/predictions',
+        'https://api.replicate.com/v1/models/wavespeedai/wan-2.1-t2v-480p/predictions',
         headers={
             'Authorization': f'Token {api_token}',
             'Content-Type': 'application/json',
@@ -60,8 +60,6 @@ def handler(event: dict, context) -> dict:
         json={
             'input': {
                 'prompt': enhanced_prompt,
-                'num_frames': 81,
-                'frames_per_second': 16,
             }
         },
         timeout=30
