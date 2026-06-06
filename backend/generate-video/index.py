@@ -4,8 +4,8 @@ import requests
 
 def handler(event: dict, context) -> dict:
     """
-    Start AI video generation via Hugging Face Inference API (LTX-Video) asynchronously.
-    Submits the job and returns a task_id immediately to poll separately.
+    Submit video generation job to HuggingFace async queue.
+    Returns job_id instantly without waiting for completion.
     """
     if event.get('httpMethod') == 'OPTIONS':
         return {
@@ -48,14 +48,14 @@ def handler(event: dict, context) -> dict:
     }
 
     enhanced_prompt = f"{prompt}. {style_hints.get(style, '')}. {template_hints.get(template, '')}"
-    print(f"[generate-video] prompt: {enhanced_prompt[:120]}")
+    print(f"[generate-video] prompt={enhanced_prompt[:120]}")
 
+    # Use HuggingFace Jobs API — submits async, returns job_id immediately
     response = requests.post(
-        'https://api-inference.huggingface.co/models/Lightricks/LTX-Video',
+        'https://api-inference.huggingface.co/models/Lightricks/LTX-Video/queue',
         headers={
             'Authorization': f'Bearer {api_token}',
             'Content-Type': 'application/json',
-            'X-Use-Cache': 'false',
         },
         json={
             'inputs': enhanced_prompt,
@@ -64,68 +64,69 @@ def handler(event: dict, context) -> dict:
                 'num_inference_steps': 25,
                 'height': 480,
                 'width': 704,
-            },
-            'options': {
-                'wait_for_model': False,
-                'use_cache': False,
             }
         },
-        timeout=15
+        timeout=10
     )
 
-    print(f"[generate-video] status={response.status_code} ct={response.headers.get('content-type','')} len={len(response.content)} body={response.text[:300]}")
+    print(f"[generate-video] queue status={response.status_code} body={response.text[:400]}")
+
+    # Fallback to standard endpoint if /queue not supported
+    if response.status_code not in (200, 201):
+        response = requests.post(
+            'https://api-inference.huggingface.co/models/Lightricks/LTX-Video',
+            headers={
+                'Authorization': f'Bearer {api_token}',
+                'Content-Type': 'application/json',
+                'X-Wait-For-Model': 'false',
+            },
+            json={
+                'inputs': enhanced_prompt,
+                'parameters': {'num_frames': 25, 'num_inference_steps': 25, 'height': 480, 'width': 704},
+                'options': {'wait_for_model': False, 'use_cache': False}
+            },
+            timeout=10
+        )
+        print(f"[generate-video] fallback status={response.status_code} ct={response.headers.get('content-type','')} body={response.text[:400]}")
 
     if response.status_code == 503:
         try:
             est = response.json().get('estimated_time', 30)
         except Exception:
             est = 30
-        return {
-            'statusCode': 200,
-            'headers': CORS,
-            'body': json.dumps({'error': f'Model is warming up, please try again in {int(est)+5} seconds.'})
-        }
+        return {'statusCode': 200, 'headers': CORS,
+                'body': json.dumps({'error': f'Model is warming up, please retry in {int(est)+5}s.'})}
 
     if response.status_code != 200:
-        return {
-            'statusCode': 200,
-            'headers': CORS,
-            'body': json.dumps({'error': f'HuggingFace error {response.status_code}: {response.text[:200]}'})
-        }
+        return {'statusCode': 200, 'headers': CORS,
+                'body': json.dumps({'error': f'HuggingFace error {response.status_code}: {response.text[:300]}'})}
 
     content_type = response.headers.get('content-type', '')
+    print(f"[generate-video] ct={content_type} len={len(response.content)}")
 
-    # Video returned directly as bytes
+    # Got video bytes directly
     if 'video' in content_type or 'octet' in content_type or len(response.content) > 5000:
         import base64
-        video_b64 = base64.b64encode(response.content).decode('utf-8')
         return {
-            'statusCode': 200,
-            'headers': CORS,
+            'statusCode': 200, 'headers': CORS,
             'body': json.dumps({
                 'task_id': 'direct',
                 'status': 'SUCCEEDED',
-                'video_b64': video_b64,
+                'video_b64': base64.b64encode(response.content).decode(),
                 'video_mime': 'video/mp4',
             })
         }
 
-    # JSON response
+    # Got JSON — look for any job/task id field
     try:
         data = response.json()
-        print(f"[generate-video] json={json.dumps(data)[:300]}")
-        job_id = data.get('job_id') or data.get('id') or data.get('task_id')
+        print(f"[generate-video] json={json.dumps(data)[:400]}")
+        job_id = data.get('job_id') or data.get('id') or data.get('task_id') or data.get('request_id')
         if job_id:
-            return {
-                'statusCode': 200,
-                'headers': CORS,
-                'body': json.dumps({'task_id': job_id, 'status': 'RUNNING'})
-            }
+            return {'statusCode': 200, 'headers': CORS,
+                    'body': json.dumps({'task_id': str(job_id), 'status': 'RUNNING'})}
     except Exception as e:
-        print(f"[generate-video] parse error: {e}")
+        print(f"[generate-video] json parse error: {e}")
 
-    return {
-        'statusCode': 200,
-        'headers': CORS,
-        'body': json.dumps({'error': f'Unexpected response: {response.text[:300]}'})
-    }
+    return {'statusCode': 200, 'headers': CORS,
+            'body': json.dumps({'error': f'Unexpected response: {response.text[:300]}'})}
