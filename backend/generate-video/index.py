@@ -52,9 +52,8 @@ def handler(event: dict, context) -> dict:
     response = requests.post(
         'https://api.replicate.com/v1/models/minimax/video-01/predictions',
         headers={
-            'Authorization': f'Bearer {api_token}',
+            'Authorization': f'Token {api_token}',
             'Content-Type': 'application/json',
-            'Prefer': 'wait=5',
         },
         json={
             'input': {

@@ -34,7 +34,7 @@ def handler(event: dict, context) -> dict:
     response = requests.get(
         f'https://api.replicate.com/v1/predictions/{task_id}',
         headers={
-            'Authorization': f'Bearer {api_token}',
+            'Authorization': f'Token {api_token}',
             'Content-Type': 'application/json',
         },
         timeout=15
