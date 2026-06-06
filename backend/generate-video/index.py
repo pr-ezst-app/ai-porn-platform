@@ -4,8 +4,8 @@ import requests
 
 def handler(event: dict, context) -> dict:
     """
-    Start AI video generation via Replicate (wan-ai/wan2.1-t2v-480p).
-    Accepts prompt, style, template. Returns a prediction_id to poll.
+    Start AI video generation via Hugging Face Inference API (LTX-Video).
+    Accepts prompt, style, template. Returns a task_id to poll.
     """
     if event.get('httpMethod') == 'OPTIONS':
         return {
@@ -29,9 +29,9 @@ def handler(event: dict, context) -> dict:
     if not prompt:
         return {'statusCode': 400, 'headers': CORS, 'body': json.dumps({'error': 'Prompt is required'})}
 
-    api_token = os.environ.get('REPLICATE_API_TOKEN')
+    api_token = os.environ.get('HUGGINGFACE_API_TOKEN')
     if not api_token:
-        return {'statusCode': 500, 'headers': CORS, 'body': json.dumps({'error': 'REPLICATE_API_TOKEN not configured'})}
+        return {'statusCode': 500, 'headers': CORS, 'body': json.dumps({'error': 'HUGGINGFACE_API_TOKEN not configured'})}
 
     style_hints = {
         'realistic': 'photorealistic, ultra HD, cinematic lighting',
@@ -39,61 +39,73 @@ def handler(event: dict, context) -> dict:
         '3d': '3D rendered, volumetric lighting, CGI quality',
     }
     template_hints = {
-        'cinematic': 'cinematic wide angle, dramatic composition, film grain',
+        'cinematic': 'cinematic wide angle, dramatic composition',
         'social': 'vibrant and eye-catching, social media style',
-        'explainer': 'clean and clear visuals, professional, corporate style',
+        'explainer': 'clean and clear visuals, professional',
         'promo': 'dynamic motion, energetic and engaging',
-        'documentary': 'natural lighting, authentic feel, documentary style',
+        'documentary': 'natural lighting, authentic feel',
         'animation': 'smooth animation, colorful, motion graphics',
     }
 
     enhanced_prompt = f"{prompt}. {style_hints.get(style, '')}. {template_hints.get(template, '')}"
 
-    print(f"[generate-video] Sending to Replicate: {enhanced_prompt[:100]}")
+    print(f"[generate-video] Prompt: {enhanced_prompt[:120]}")
 
+    # Use HF Inference API with LTX-Video model
     response = requests.post(
-        'https://api.replicate.com/v1/models/wavespeedai/wan-2.1-t2v-480p/predictions',
+        'https://api-inference.huggingface.co/models/Lightricks/LTX-Video',
         headers={
-            'Authorization': f'Token {api_token}',
+            'Authorization': f'Bearer {api_token}',
             'Content-Type': 'application/json',
+            'X-Wait-For-Model': 'true',
         },
         json={
-            'input': {
-                'prompt': enhanced_prompt,
+            'inputs': enhanced_prompt,
+            'parameters': {
+                'num_frames': 25,
+                'num_inference_steps': 30,
+                'height': 480,
+                'width': 704,
             }
         },
-        timeout=30
+        timeout=120
     )
 
-    print(f"[generate-video] Replicate status: {response.status_code}, body: {response.text[:300]}")
+    print(f"[generate-video] HF status: {response.status_code}, content-type: {response.headers.get('content-type','')}, body[:200]: {response.text[:200]}")
 
-    if response.status_code not in (200, 201):
+    if response.status_code == 503:
+        return {
+            'statusCode': 200,
+            'headers': CORS,
+            'body': json.dumps({'error': 'Model is loading, please try again in 30 seconds.'})
+        }
+
+    if response.status_code != 200:
+        return {
+            'statusCode': 200,
+            'headers': CORS,
+            'body': json.dumps({'error': f'HuggingFace error {response.status_code}: {response.text[:200]}'})
+        }
+
+    # HF Inference API returns the video bytes directly
+    content_type = response.headers.get('content-type', '')
+    if 'video' in content_type or len(response.content) > 1000:
+        import base64
+        video_b64 = base64.b64encode(response.content).decode('utf-8')
         return {
             'statusCode': 200,
             'headers': CORS,
             'body': json.dumps({
-                'error': f'Replicate error {response.status_code}: {response.text[:200]}'
+                'task_id': 'direct',
+                'status': 'SUCCEEDED',
+                'video_b64': video_b64,
+                'video_mime': 'video/mp4',
+                'message': 'Video ready',
             })
         }
-
-    data = response.json()
-    prediction_id = data.get('id')
-    status = data.get('status', 'starting')
-
-    status_map = {'starting': 'RUNNING', 'processing': 'RUNNING', 'succeeded': 'SUCCEEDED', 'failed': 'FAILED', 'canceled': 'FAILED'}
-    mapped_status = status_map.get(status, 'RUNNING')
-
-    output = data.get('output')
-    video_url = output if isinstance(output, str) else (output[0] if isinstance(output, list) and output else None)
 
     return {
         'statusCode': 200,
         'headers': CORS,
-        'body': json.dumps({
-            'task_id': prediction_id,
-            'status': mapped_status,
-            'video_url': video_url,
-            'message': 'Video generation started',
-            'estimated_seconds': 90
-        })
+        'body': json.dumps({'error': f'Unexpected response: {response.text[:200]}'})
     }

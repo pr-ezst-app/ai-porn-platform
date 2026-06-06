@@ -131,6 +131,13 @@ export default function Index() {
       });
       const data = await res.json();
       if (data.error) { setError(data.error); return; }
+      // HuggingFace returns video directly as base64
+      if (data.status === "SUCCEEDED" && data.video_b64) {
+        const blob = new Blob([Uint8Array.from(atob(data.video_b64), c => c.charCodeAt(0))], { type: data.video_mime || "video/mp4" });
+        setCompletedVideo(URL.createObjectURL(blob));
+        setPrompt("");
+        return;
+      }
       if (!data.task_id) { setError("No task ID returned. Check API token."); return; }
       setRenderingJob({ task_id: data.task_id, title: prompt.slice(0, 50), progress: 0, status: "RUNNING" });
       setPrompt("");
@@ -406,8 +413,8 @@ export default function Index() {
                     className="w-full py-3.5 rounded-xl font-syne font-bold text-sm text-black flex items-center justify-center gap-2.5 transition-all duration-200 hover:opacity-90 hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100"
                     style={{ background: "linear-gradient(135deg, #00e6ff 0%, #8250dc 100%)", boxShadow: "0 8px 32px rgba(0,230,255,0.2), 0 4px 16px rgba(130,80,220,0.2)" }}>
                     {generating ? <Icon name="Loader2" size={17} className="animate-spin-slow" /> : <Icon name="Sparkles" size={17} />}
-                    {generating ? "Starting…" : renderingJob ? "Rendering in progress…" : "Generate Video"}
-                    {!generating && !renderingJob && <span className="ml-auto text-black/50 text-xs font-dm font-normal">~45 sec</span>}
+                    {generating ? "Generating… please wait" : renderingJob ? "Rendering in progress…" : "Generate Video"}
+                    {!generating && !renderingJob && <span className="ml-auto text-black/50 text-xs font-dm font-normal">~60-90 sec</span>}
                   </button>
                 </div>
               </div>
