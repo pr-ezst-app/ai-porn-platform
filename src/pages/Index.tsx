@@ -1,5 +1,16 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import Icon from "@/components/ui/icon";
+
+const GENERATE_URL = "https://functions.poehali.dev/70f49b6f-da02-473c-b690-5be969981b4c";
+const STATUS_URL = "https://functions.poehali.dev/e618fb3f-5427-470e-9441-a61fcfa888db";
+
+interface RenderingJob {
+  task_id: string;
+  title: string;
+  progress: number;
+  status: "RUNNING" | "SUCCEEDED" | "FAILED";
+  video_url?: string;
+}
 
 const TEMPLATES = [
   { id: "cinematic", label: "Cinematic", icon: "Film", color: "from-blue-500/20 to-cyan-500/20" },
@@ -75,6 +86,59 @@ export default function Index() {
   const [duration, setDuration] = useState("30");
   const [style, setStyle] = useState("realistic");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [renderingJob, setRenderingJob] = useState<RenderingJob | null>(null);
+  const [completedVideo, setCompletedVideo] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (!renderingJob) return;
+    if (renderingJob.status !== "RUNNING") return;
+
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`${STATUS_URL}?task_id=${renderingJob.task_id}`);
+        const data = await res.json();
+        setRenderingJob(prev => prev ? { ...prev, progress: data.progress ?? prev.progress, status: data.status, video_url: data.video_url } : null);
+        if (data.status === "SUCCEEDED") {
+          setCompletedVideo(data.video_url);
+          setRenderingJob(null);
+          clearInterval(pollRef.current!);
+        } else if (data.status === "FAILED") {
+          setError("Rendering failed. Please try again.");
+          setRenderingJob(null);
+          clearInterval(pollRef.current!);
+        }
+      } catch {
+        // keep polling silently
+      }
+    }, 3000);
+
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [renderingJob?.task_id]);
+
+  const handleGenerate = async () => {
+    if (!prompt.trim()) { setError("Please enter a prompt first."); return; }
+    setError(null);
+    setGenerating(true);
+    setCompletedVideo(null);
+    try {
+      const res = await fetch(GENERATE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, duration: parseInt(duration), style, template: selectedTemplate }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error || "Failed to start generation."); return; }
+      setRenderingJob({ task_id: data.task_id, title: prompt.slice(0, 50), progress: 0, status: "RUNNING" });
+      setPrompt("");
+    } catch {
+      setError("Network error. Please try again.");
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background flex overflow-hidden">
@@ -325,38 +389,83 @@ export default function Index() {
                     </div>
                   </div>
 
+                  {/* Error message */}
+                  {error && (
+                    <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm font-dm text-red-400"
+                      style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)" }}>
+                      <Icon name="AlertCircle" size={15} />
+                      {error}
+                    </div>
+                  )}
+
                   {/* Generate button */}
                   <button
-                    className="w-full py-3.5 rounded-xl font-syne font-bold text-sm text-black flex items-center justify-center gap-2.5 transition-all duration-200 hover:opacity-90 hover:scale-[1.01] active:scale-[0.99]"
+                    onClick={handleGenerate}
+                    disabled={generating || !!renderingJob}
+                    className="w-full py-3.5 rounded-xl font-syne font-bold text-sm text-black flex items-center justify-center gap-2.5 transition-all duration-200 hover:opacity-90 hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100"
                     style={{ background: "linear-gradient(135deg, #00e6ff 0%, #8250dc 100%)", boxShadow: "0 8px 32px rgba(0,230,255,0.2), 0 4px 16px rgba(130,80,220,0.2)" }}>
-                    <Icon name="Sparkles" size={17} />
-                    Generate Video
-                    <span className="ml-auto text-black/50 text-xs font-dm font-normal">~45 sec</span>
+                    {generating ? <Icon name="Loader2" size={17} className="animate-spin-slow" /> : <Icon name="Sparkles" size={17} />}
+                    {generating ? "Starting…" : renderingJob ? "Rendering in progress…" : "Generate Video"}
+                    {!generating && !renderingJob && <span className="ml-auto text-black/50 text-xs font-dm font-normal">~45 sec</span>}
                   </button>
                 </div>
               </div>
 
-              {/* Rendering status */}
-              <div className="glass rounded-2xl p-4 flex items-center gap-4"
-                style={{ border: "1px solid rgba(130,80,220,0.2)" }}>
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-                  style={{ background: "rgba(130,80,220,0.15)" }}>
-                  <Icon name="Loader2" size={20} className="text-violet-400 animate-spin-slow" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="font-dm text-sm text-white/80">How It Works Explainer</span>
-                    <span className="text-xs text-violet-400 font-syne font-semibold">68%</span>
+              {/* Rendering status — live */}
+              {renderingJob && (
+                <div className="glass rounded-2xl p-4 flex items-center gap-4 animate-fade-up"
+                  style={{ border: "1px solid rgba(130,80,220,0.2)" }}>
+                  <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                    style={{ background: "rgba(130,80,220,0.15)" }}>
+                    <Icon name="Loader2" size={20} className="text-violet-400 animate-spin-slow" />
                   </div>
-                  <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
-                    <div className="h-full rounded-full progress-bar animate-shimmer" style={{ width: "68%" }} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="font-dm text-sm text-white/80 truncate">{renderingJob.title}…</span>
+                      <span className="text-xs text-violet-400 font-syne font-semibold ml-2 flex-shrink-0">{renderingJob.progress}%</span>
+                    </div>
+                    <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
+                      <div className="h-full rounded-full progress-bar animate-shimmer transition-all duration-500"
+                        style={{ width: `${renderingJob.progress}%` }} />
+                    </div>
+                    <div className="text-xs text-white/30 font-dm mt-1.5">Rendering frames… please wait</div>
                   </div>
-                  <div className="text-xs text-white/30 font-dm mt-1.5">Rendering frames… ~30s remaining</div>
+                  <button
+                    onClick={() => { setRenderingJob(null); if (pollRef.current) clearInterval(pollRef.current); }}
+                    className="text-white/20 hover:text-white/50 transition-colors flex-shrink-0">
+                    <Icon name="X" size={16} />
+                  </button>
                 </div>
-                <button className="text-white/20 hover:text-white/50 transition-colors flex-shrink-0">
-                  <Icon name="X" size={16} />
-                </button>
-              </div>
+              )}
+
+              {/* Completed video */}
+              {completedVideo && (
+                <div className="glass rounded-2xl overflow-hidden animate-fade-up"
+                  style={{ border: "1px solid rgba(0,230,255,0.2)" }}>
+                  <div className="px-4 py-3 flex items-center gap-2"
+                    style={{ borderBottom: "1px solid rgba(255,255,255,0.06)", background: "rgba(0,230,255,0.04)" }}>
+                    <Icon name="CheckCircle2" size={16} className="text-emerald-400" />
+                    <span className="font-syne font-semibold text-sm text-white">Video Ready!</span>
+                    <button onClick={() => setCompletedVideo(null)}
+                      className="ml-auto text-white/20 hover:text-white/50 transition-colors">
+                      <Icon name="X" size={15} />
+                    </button>
+                  </div>
+                  <video src={completedVideo} controls className="w-full" style={{ maxHeight: "220px", background: "#000" }} />
+                  <div className="px-4 py-3 flex gap-2">
+                    <a href={completedVideo} download
+                      className="flex-1 py-2 rounded-lg text-xs font-syne font-semibold text-black flex items-center justify-center gap-1.5"
+                      style={{ background: "linear-gradient(135deg, #00e6ff, #8250dc)" }}>
+                      <Icon name="Download" size={13} /> Download
+                    </a>
+                    <button onClick={() => setCompletedVideo(null)}
+                      className="px-4 py-2 rounded-lg text-xs font-syne font-semibold text-white/50 hover:text-white/80 transition-colors"
+                      style={{ border: "1px solid rgba(255,255,255,0.1)" }}>
+                      Close
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Right column */}
