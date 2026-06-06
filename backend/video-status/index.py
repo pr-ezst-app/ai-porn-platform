@@ -4,7 +4,7 @@ import requests
 
 def handler(event: dict, context) -> dict:
     """
-    Poll Runway ML task status by task_id.
+    Poll Replicate prediction status by task_id (prediction_id).
     Returns status (RUNNING, SUCCEEDED, FAILED) and video URL when done.
     """
     if event.get('httpMethod') == 'OPTIONS':
@@ -27,42 +27,46 @@ def handler(event: dict, context) -> dict:
     if not task_id:
         return {'statusCode': 400, 'headers': CORS, 'body': json.dumps({'error': 'task_id is required'})}
 
-    api_key = os.environ.get('RUNWAY_API_KEY')
-    if not api_key:
-        return {'statusCode': 500, 'headers': CORS, 'body': json.dumps({'error': 'RUNWAY_API_KEY not configured'})}
-
-    headers = {
-        'Authorization': f'Bearer {api_key}',
-        'X-Runway-Version': '2024-11-06',
-    }
+    api_token = os.environ.get('REPLICATE_API_TOKEN')
+    if not api_token:
+        return {'statusCode': 500, 'headers': CORS, 'body': json.dumps({'error': 'REPLICATE_API_TOKEN not configured'})}
 
     response = requests.get(
-        f'https://api.dev.runwayml.com/v1/tasks/{task_id}',
-        headers=headers,
+        f'https://api.replicate.com/v1/predictions/{task_id}',
+        headers={
+            'Authorization': f'Bearer {api_token}',
+            'Content-Type': 'application/json',
+        },
         timeout=15
     )
 
     if response.status_code == 404:
-        return {'statusCode': 404, 'headers': CORS, 'body': json.dumps({'error': 'Task not found'})}
+        return {'statusCode': 404, 'headers': CORS, 'body': json.dumps({'error': 'Prediction not found'})}
 
     if response.status_code != 200:
-        return {'statusCode': response.status_code, 'headers': CORS, 'body': json.dumps({'error': 'Runway API error'})}
+        return {'statusCode': response.status_code, 'headers': CORS, 'body': json.dumps({'error': 'Replicate API error'})}
 
     data = response.json()
-    status = data.get('status', 'RUNNING')
-    output = data.get('output') or []
-    progress = data.get('progressRatio', 0)
+    status = data.get('status', 'starting')
 
-    video_url = output[0] if output and status == 'SUCCEEDED' else None
+    status_map = {'starting': 'RUNNING', 'processing': 'RUNNING', 'succeeded': 'SUCCEEDED', 'failed': 'FAILED', 'canceled': 'FAILED'}
+    mapped_status = status_map.get(status, 'RUNNING')
+
+    output = data.get('output')
+    video_url = output if isinstance(output, str) else (output[0] if isinstance(output, list) and output else None)
+
+    # Estimate progress from logs if available
+    logs = data.get('logs') or ''
+    progress = 50 if mapped_status == 'RUNNING' else (100 if mapped_status == 'SUCCEEDED' else 0)
 
     return {
         'statusCode': 200,
         'headers': CORS,
         'body': json.dumps({
             'task_id': task_id,
-            'status': status,
-            'progress': round((progress or 0) * 100),
+            'status': mapped_status,
+            'progress': progress,
             'video_url': video_url,
-            'failure_code': data.get('failureCode'),
+            'error': data.get('error'),
         })
     }

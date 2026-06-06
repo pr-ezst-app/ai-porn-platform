@@ -4,9 +4,8 @@ import requests
 
 def handler(event: dict, context) -> dict:
     """
-    Start AI video generation via Runway ML Gen-3 Alpha Turbo.
-    Accepts prompt, duration (5 or 10 seconds), style, template.
-    Returns a task_id to poll for completion.
+    Start AI video generation via Replicate (minimax/video-01).
+    Accepts prompt, style, template. Returns a prediction_id to poll.
     """
     if event.get('httpMethod') == 'OPTIONS':
         return {
@@ -24,21 +23,16 @@ def handler(event: dict, context) -> dict:
 
     body = json.loads(event.get('body') or '{}')
     prompt = body.get('prompt', '').strip()
-    duration = int(body.get('duration', 5))
     style = body.get('style', 'realistic')
     template = body.get('template', 'cinematic')
 
     if not prompt:
         return {'statusCode': 400, 'headers': CORS, 'body': json.dumps({'error': 'Prompt is required'})}
 
-    api_key = os.environ.get('RUNWAY_API_KEY')
-    if not api_key:
-        return {'statusCode': 500, 'headers': CORS, 'body': json.dumps({'error': 'RUNWAY_API_KEY not configured'})}
+    api_token = os.environ.get('REPLICATE_API_TOKEN')
+    if not api_token:
+        return {'statusCode': 500, 'headers': CORS, 'body': json.dumps({'error': 'REPLICATE_API_TOKEN not configured'})}
 
-    # Runway Gen-3 only supports 5 or 10 seconds
-    runway_duration = 10 if duration >= 60 else 5
-
-    # Enhance prompt with style and template context
     style_hints = {
         'realistic': 'photorealistic, ultra HD, cinematic lighting',
         'anime': 'anime art style, vibrant colors, detailed illustration',
@@ -55,46 +49,47 @@ def handler(event: dict, context) -> dict:
 
     enhanced_prompt = f"{prompt}. {style_hints.get(style, '')}. {template_hints.get(template, '')}"
 
-    headers = {
-        'Authorization': f'Bearer {api_key}',
-        'Content-Type': 'application/json',
-        'X-Runway-Version': '2024-11-06',
-    }
-
-    payload = {
-        'promptText': enhanced_prompt,
-        'model': 'gen3a_turbo',
-        'duration': runway_duration,
-        'ratio': '1280:768',
-        'watermark': False,
-    }
-
     response = requests.post(
-        'https://api.dev.runwayml.com/v1/image_to_video',
-        headers=headers,
-        json=payload,
+        'https://api.replicate.com/v1/models/minimax/video-01/predictions',
+        headers={
+            'Authorization': f'Bearer {api_token}',
+            'Content-Type': 'application/json',
+            'Prefer': 'wait=5',
+        },
+        json={
+            'input': {
+                'prompt': enhanced_prompt,
+            }
+        },
         timeout=30
     )
 
-    # Runway returns 200 with task info
     if response.status_code not in (200, 201):
-        error_detail = response.text
         return {
             'statusCode': response.status_code,
             'headers': CORS,
-            'body': json.dumps({'error': 'Runway API error', 'detail': error_detail})
+            'body': json.dumps({'error': 'Replicate API error', 'detail': response.text})
         }
 
     data = response.json()
-    task_id = data.get('id')
+    prediction_id = data.get('id')
+    status = data.get('status', 'starting')
+
+    # Map Replicate status to our internal status
+    status_map = {'starting': 'RUNNING', 'processing': 'RUNNING', 'succeeded': 'SUCCEEDED', 'failed': 'FAILED', 'canceled': 'FAILED'}
+    mapped_status = status_map.get(status, 'RUNNING')
+
+    output = data.get('output')
+    video_url = output if isinstance(output, str) else (output[0] if isinstance(output, list) and output else None)
 
     return {
         'statusCode': 200,
         'headers': CORS,
         'body': json.dumps({
-            'task_id': task_id,
-            'status': 'RUNNING',
+            'task_id': prediction_id,
+            'status': mapped_status,
+            'video_url': video_url,
             'message': 'Video generation started',
-            'estimated_seconds': runway_duration * 10
+            'estimated_seconds': 60
         })
     }
