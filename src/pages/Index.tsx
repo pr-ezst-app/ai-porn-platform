@@ -130,7 +130,8 @@ export default function Index() {
         body: JSON.stringify({ prompt, duration: parseInt(duration), style, template: selectedTemplate }),
       });
       const data = await res.json();
-      if (!res.ok) { setError(data.error || "Failed to start generation."); return; }
+      if (data.error) { setError(data.error); return; }
+      if (!data.task_id) { setError("No task ID returned. Check API token."); return; }
       setRenderingJob({ task_id: data.task_id, title: prompt.slice(0, 50), progress: 0, status: "RUNNING" });
       setPrompt("");
     } catch {

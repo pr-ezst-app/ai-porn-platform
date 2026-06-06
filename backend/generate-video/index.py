@@ -4,7 +4,7 @@ import requests
 
 def handler(event: dict, context) -> dict:
     """
-    Start AI video generation via Replicate (minimax/video-01).
+    Start AI video generation via Replicate (wan-ai/wan2.1-t2v-480p).
     Accepts prompt, style, template. Returns a prediction_id to poll.
     """
     if event.get('httpMethod') == 'OPTIONS':
@@ -40,17 +40,19 @@ def handler(event: dict, context) -> dict:
     }
     template_hints = {
         'cinematic': 'cinematic wide angle, dramatic composition, film grain',
-        'social': 'vertical format, vibrant and eye-catching, social media style',
+        'social': 'vibrant and eye-catching, social media style',
         'explainer': 'clean and clear visuals, professional, corporate style',
-        'promo': 'dynamic motion, brand colors, energetic and engaging',
+        'promo': 'dynamic motion, energetic and engaging',
         'documentary': 'natural lighting, authentic feel, documentary style',
         'animation': 'smooth animation, colorful, motion graphics',
     }
 
     enhanced_prompt = f"{prompt}. {style_hints.get(style, '')}. {template_hints.get(template, '')}"
 
+    print(f"[generate-video] Sending to Replicate: {enhanced_prompt[:100]}")
+
     response = requests.post(
-        'https://api.replicate.com/v1/models/minimax/video-01/predictions',
+        'https://api.replicate.com/v1/models/wan-ai/wan2.1-t2v-480p/predictions',
         headers={
             'Authorization': f'Token {api_token}',
             'Content-Type': 'application/json',
@@ -58,23 +60,28 @@ def handler(event: dict, context) -> dict:
         json={
             'input': {
                 'prompt': enhanced_prompt,
+                'num_frames': 81,
+                'frames_per_second': 16,
             }
         },
         timeout=30
     )
 
+    print(f"[generate-video] Replicate status: {response.status_code}, body: {response.text[:300]}")
+
     if response.status_code not in (200, 201):
         return {
-            'statusCode': response.status_code,
+            'statusCode': 200,
             'headers': CORS,
-            'body': json.dumps({'error': 'Replicate API error', 'detail': response.text})
+            'body': json.dumps({
+                'error': f'Replicate error {response.status_code}: {response.text[:200]}'
+            })
         }
 
     data = response.json()
     prediction_id = data.get('id')
     status = data.get('status', 'starting')
 
-    # Map Replicate status to our internal status
     status_map = {'starting': 'RUNNING', 'processing': 'RUNNING', 'succeeded': 'SUCCEEDED', 'failed': 'FAILED', 'canceled': 'FAILED'}
     mapped_status = status_map.get(status, 'RUNNING')
 
@@ -89,6 +96,6 @@ def handler(event: dict, context) -> dict:
             'status': mapped_status,
             'video_url': video_url,
             'message': 'Video generation started',
-            'estimated_seconds': 60
+            'estimated_seconds': 90
         })
     }
